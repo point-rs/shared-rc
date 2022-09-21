@@ -1,0 +1,24 @@
+[package]
+name = "shared-rc"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.56.0"
+
+description = "Rc wrapper which can separate the data from the reference count"
+repository = "https://github.com/point-rs/shared-rc"
+license = "MIT OR Apache-2.0"
+keywords = ["rc", "arc", "projected", "shared_ptr", "reference-counting"]
+categories = ["data-structures", "memory-management", "no-std", "rust-patterns"]
+
+[features]
+std = []
+static_assertions = ["dep:static_assertions"]
+unsize = ["dep:unsize"]
+
+[dependencies]
+static_assertions = { version = "1.1.0", optional = true }
+unsize = { version = "1.1.0", optional = true }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg=docsrs"]
