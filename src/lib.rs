@@ -5,7 +5,7 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
-/// A trait blanket implemented for *all* types.
+/// A marker trait for types that can be dropped (*all* types).
 ///
 /// Used as `dyn Destruct` to represent truly any type. [`Any`](core::any::Any)
 /// introduces an undesired `'static` bound, [`Drop`] bounds test uselessly for
@@ -28,19 +28,29 @@ use core::{
 #[cfg(feature = "std")]
 use std::{error::Error, panic::UnwindSafe};
 
-macro_rules! make_shared_rc {
-    ($Rc:ident) => {
+macro_rules! make_shared_strong {
+    ($Rc:ident: $($Oibit:ident+)*) => {
         /// A projecting version of
         #[doc = concat!(" [`", stringify!($Rc), "`](rc::", stringify!($Rc), ")")]
         /// which allows owning a containing struct but referencing a field.
-        #[derive(Clone)]
-        pub struct $Rc<T: ?Sized, Owner: ?Sized = dyn Destruct> {
+        pub struct $Rc<T: ?Sized, Owner: ?Sized = dyn Destruct $(+$Oibit)*> {
             owner: rc::$Rc<Owner>,
             this: ptr::NonNull<T>,
         }
 
-        unsafe impl<T: ?Sized, Owner: ?Sized> Send for $Rc<T, Owner> where rc::$Rc<T>: Send {}
-        unsafe impl<T: ?Sized, Owner: ?Sized> Sync for $Rc<T, Owner> where rc::$Rc<T>: Sync {}
+        unsafe impl<T: ?Sized, Owner: ?Sized> Send for $Rc<T, Owner>
+        where
+            for<'a> &'a T: Send,
+            rc::$Rc<Owner>: Send,
+        {
+        }
+
+        unsafe impl<T: ?Sized, Owner: ?Sized> Sync for $Rc<T, Owner>
+        where
+            for<'a> &'a T: Sync,
+            rc::$Rc<Owner>: Sync,
+        {
+        }
 
         #[cfg(feature = "std")]
         impl<T: ?Sized, Owner: ?Sized> UnwindSafe for $Rc<T, Owner>
@@ -50,40 +60,38 @@ macro_rules! make_shared_rc {
         {
         }
 
-        /// A projecting version of
-        /// [`Weak`](rc::Weak)
-        /// which allows owning a containing struct but referencing a field.
-        #[derive(Clone)]
-        pub struct Weak<T: ?Sized, Owner: ?Sized = dyn Destruct> {
-            owner: rc::Weak<Owner>,
-            this: ptr::NonNull<T>,
-        }
-
-        unsafe impl<T: ?Sized, Owner: ?Sized> Send for Weak<T, Owner> where rc::Weak<T>: Send {}
-        unsafe impl<T: ?Sized, Owner: ?Sized> Sync for Weak<T, Owner> where rc::Weak<T>: Sync {}
-
-        #[cfg(feature = "std")]
-        impl<T: ?Sized, Owner: ?Sized> UnwindSafe for Weak<T, Owner>
-        where
-            for<'a> &'a T: UnwindSafe,
-            rc::Weak<Owner>: UnwindSafe,
-        {
-        }
-
-        impl<'a, T: 'a> $Rc<T, dyn 'a + Destruct> {
-            /// Constructs a new
-            #[doc = concat!("`", stringify!($Rc), "<T>`")]
-            /// .
-            pub fn new(this: T) -> Self {
-                $Rc::erase_owner($Rc::<T, T>::from(this))
+        impl<T: ?Sized, Owner: ?Sized> Clone for $Rc<T, Owner> {
+            fn clone(&self) -> Self {
+                Self {
+                    owner: self.owner.clone(),
+                    this: self.this,
+                }
             }
         }
 
-        impl<'a, T: ?Sized, Owner: 'a + Sized> $Rc<T, Owner> {
+        impl<'a, T: 'a $(+$Oibit)*> $Rc<T, dyn 'a + Destruct $(+$Oibit)*> {
+            /// Constructs a new
+            #[doc = concat!("`", stringify!($Rc), "<T>`")]
+            /// with erased owner.
+            pub fn new(this: T) -> Self {
+                $Rc::erase_owner($Rc::new_owner(this))
+            }
+        }
+
+        impl<T> $Rc<T, T> {
+            /// Constructs a new
+            #[doc = concat!("`", stringify!($Rc), "<T, T>`")]
+            /// with typed owner.
+            pub fn new_owner(this: T) -> Self {
+                Self::from(this)
+            }
+        }
+
+        impl<'a, T: ?Sized, Owner: 'a $(+$Oibit)*> $Rc<T, Owner> {
             /// Erases the owning type so projected
-            #[doc = stringify!($Rc)]
+            #[doc = concat!("`", stringify!($Rc), "<T>`")]
             /// can be used uniformly.
-            pub fn erase_owner(this: Self) -> $Rc<T, dyn 'a + Destruct> {
+            pub fn erase_owner(this: Self) -> $Rc<T, dyn 'a + Destruct $(+$Oibit)*> {
                 let Self { owner, this } = this;
                 $Rc { owner, this }
             }
@@ -132,9 +140,14 @@ macro_rules! make_shared_rc {
 
             /// Returns `true` if the two
             #[doc = concat!("`", stringify!($Rc), "`s")]
-            /// point to the same allocation (in a vein similar to [`ptr::eq`]).
+            /// point to the same field in the same allocated object.
+            ///
+            /// See [`ptr::eq`] for the caveats when comparing `dyn Trait`
+            /// pointers, which this does when the owner type is erased.
             pub fn ptr_eq(lhs: &Self, rhs: &Self) -> bool {
-                rc::$Rc::ptr_eq(&lhs.owner, &rhs.owner) && lhs.this.as_ptr() == rhs.this.as_ptr()
+                true
+                && rc::$Rc::ptr_eq(&lhs.owner, &rhs.owner)
+                && lhs.this.as_ptr() == rhs.this.as_ptr()
             }
         }
 
@@ -217,9 +230,24 @@ macro_rules! make_shared_rc {
             }
         }
 
-        impl<T: 'static + Default> Default for $Rc<T> {
+        impl<'a, T: 'a + Default> Default for $Rc<T, dyn 'a + Destruct> {
             fn default() -> Self {
-                Self::new(T::default())
+                let $Rc { owner, this } = $Rc::<T, T>::default();
+                Self { owner, this }
+            }
+        }
+
+        impl<'a, T: 'a + Default + Send> Default for $Rc<T, dyn 'a + Destruct + Send> {
+            fn default() -> Self {
+                let $Rc { owner, this } = $Rc::<T, T>::default();
+                Self { owner, this }
+            }
+        }
+
+        impl<'a, T: 'a + Default + Send + Sync> Default for $Rc<T, dyn 'a + Destruct + Send + Sync> {
+            fn default() -> Self {
+                let $Rc { owner, this } = $Rc::<T, T>::default();
+                Self { owner, this }
             }
         }
 
@@ -263,7 +291,8 @@ macro_rules! make_shared_rc {
 
         impl<T: ?Sized> From<rc::$Rc<T>> for $Rc<T, T> {
             fn from(owner: rc::$Rc<T>) -> Self {
-                let this = ptr::NonNull::new(rc::$Rc::as_ptr(&owner) as _).unwrap();
+                let this = ptr::NonNull::new(rc::$Rc::as_ptr(&owner) as *mut T)
+                    .unwrap();
                 $Rc { owner, this }
             }
         }
@@ -274,7 +303,25 @@ macro_rules! make_shared_rc {
             }
         }
 
-        impl<'a, T: ?Sized, Owner: 'a> From<$Rc<T, Owner>> for $Rc<T, dyn 'a + Destruct> {
+        impl<'a, T: ?Sized, Owner: 'a> From<$Rc<T, Owner>>
+        for $Rc<T, dyn 'a + Destruct> {
+            fn from(this: $Rc<T, Owner>) -> Self {
+                let $Rc { owner, this } = this;
+                $Rc { owner, this }
+            }
+        }
+
+        impl<'a, T: ?Sized, Owner: 'a + Send> From<$Rc<T, Owner>>
+        for $Rc<T, dyn 'a + Destruct + Send> {
+            fn from(this: $Rc<T, Owner>) -> Self {
+                let $Rc { owner, this } = this;
+                $Rc { owner, this }
+            }
+        }
+
+
+        impl<'a, T: ?Sized, Owner: 'a + Send + Sync> From<$Rc<T, Owner>>
+        for $Rc<T, dyn 'a + Destruct + Send + Sync> {
             fn from(this: $Rc<T, Owner>) -> Self {
                 let $Rc { owner, this } = this;
                 $Rc { owner, this }
@@ -322,16 +369,76 @@ macro_rules! make_shared_rc {
                 fmt::Pointer::fmt(&self.this, f)
             }
         }
+    };
+}
 
-        impl<'a, T: 'a> Weak<T, dyn 'a + Destruct> {
-            /// Constructs a new `Weak<T>`
-            pub fn new() -> Self {
-                Weak::erase_owner(Weak::<T, T>::default())
+macro_rules! make_shared_weak {
+    ($Rc:ident: $($Oibit:ident+)*) => {
+        /// A projecting version of
+        /// [`Weak`](rc::Weak)
+        /// which allows owning a containing struct but referencing a field.
+        pub struct Weak<T: ?Sized, Owner: ?Sized = dyn Destruct $(+$Oibit)*> {
+            owner: rc::Weak<Owner>,
+            this: ptr::NonNull<T>,
+        }
+
+        unsafe impl<T: ?Sized, Owner: ?Sized> Send for Weak<T, Owner>
+        where
+            for<'a> &'a T: Send,
+            rc::Weak<T>: Send,
+        {
+        }
+
+        unsafe impl<T: ?Sized, Owner: ?Sized> Sync for Weak<T, Owner>
+        where
+            for<'a> &'a T: Sync,
+            rc::Weak<T>: Sync,
+        {
+        }
+
+        #[cfg(feature = "std")]
+        impl<T: ?Sized, Owner: ?Sized> UnwindSafe for Weak<T, Owner>
+        where
+            for<'a> &'a T: UnwindSafe,
+            rc::Weak<Owner>: UnwindSafe,
+        {
+        }
+
+        impl<T: ?Sized, Owner: ?Sized> Clone for Weak<T, Owner> {
+            fn clone(&self) -> Self {
+                Self {
+                    owner: self.owner.clone(),
+                    this: self.this,
+                }
             }
         }
 
-        impl<'a, T: ?Sized, Owner: 'a + Sized> Weak<T, Owner> {
-            pub fn erase_owner(this: Self) -> Weak<T, dyn 'a + Destruct> {
+        impl<'a, T: 'a $(+$Oibit)*> Weak<T, dyn 'a + Destruct $(+$Oibit)*> {
+            /// Constructs a new
+            /// `Weak<T>`
+            /// with erased owner.
+            pub fn new() -> Self {
+                Weak::erase_owner(Weak::<T, T>::new_owner())
+            }
+        }
+
+        impl<T, Owner> Weak<T, Owner> {
+            /// Constructs a new
+            /// `Weak<T, T>`
+            /// with typed owner.
+            pub fn new_owner() -> Self {
+                Self {
+                    owner: rc::Weak::new(),
+                    this: ptr::NonNull::dangling(),
+                }
+            }
+        }
+
+        impl<'a, T: ?Sized, Owner: 'a $(+$Oibit)*> Weak<T, Owner> {
+            /// Erases the owning type so that projected
+            /// `Weak<T>`
+            /// can be used uniformly.
+            pub fn erase_owner(this: Self) -> Weak<T, dyn 'a + Destruct $(+$Oibit)*> {
                 let Self { owner, this } = this;
                 Weak { owner, this }
             }
@@ -376,17 +483,22 @@ macro_rules! make_shared_rc {
             ) -> Weak<U, Owner> {
                 let Self { owner, this } = this;
                 let this = match owner.upgrade() {
-                    None => ptr::NonNull::new(usize::MAX as *mut U).unwrap(),
+                    None => ptr::NonNull::dangling(),
                     Some(_guard) => projection(unsafe { this.as_ref() }).into(),
                 };
                 Weak { owner, this }
             }
 
-            /// Returns `true` if the two `Weak`s point to the same allocation
-            /// (similar to [`ptr::eq`]), or if both don't point to any
-            /// allocation (because they were crated with `Weak::new()`).
+            /// Returns `true` if the two `Weak`s point to the same field in
+            /// the same allocated object, or if both don't point to anything
+            /// (i.e. because they were created with `Weak::new()`).
+            ///
+            /// See [`ptr::eq`] for the caveats when comparing `dyn Trait`
+            /// pointers, which this does when the owner type is erased.
             pub fn ptr_eq(lhs: &Self, rhs: &Self) -> bool {
-                rc::Weak::ptr_eq(&lhs.owner, &rhs.owner) && lhs.this.as_ptr() == rhs.this.as_ptr()
+                true
+                && rc::Weak::ptr_eq(&lhs.owner, &rhs.owner)
+                && lhs.this.as_ptr() == rhs.this.as_ptr()
             }
         }
 
@@ -451,19 +563,78 @@ macro_rules! make_shared_rc {
             }
         }
 
-        impl<T, Owner: ?Sized> Default for Weak<T, Owner>
-        where
-            Weak<T, Owner>: From<Weak<T, T>>,
+        impl<T, Owner> Default for Weak<T, Owner>
         {
             fn default() -> Self {
-                Self::from(Weak::<T, T> {
+                Self {
                     owner: rc::Weak::new(),
-                    this: ptr::NonNull::new(usize::MAX as *mut T).unwrap(),
-                })
+                    this: ptr::NonNull::dangling(),
+                }
             }
         }
 
-        impl<'a, T: ?Sized, Owner: 'a> From<Weak<T, Owner>> for Weak<T, dyn 'a + Destruct> {
+        impl<'a, T: 'a> Default for Weak<T, dyn 'a + Destruct>
+        {
+            fn default() -> Self {
+                Self {
+                    owner: rc::Weak::<()>::new(),
+                    this: ptr::NonNull::dangling(),
+                }
+            }
+        }
+
+        impl<'a, T: 'a> Default for Weak<T, dyn 'a + Destruct + Send>
+        {
+            fn default() -> Self {
+                Self {
+                    owner: rc::Weak::<()>::new(),
+                    this: ptr::NonNull::dangling(),
+                }
+            }
+        }
+
+        impl<'a, T: 'a> Default for Weak<T, dyn 'a + Destruct + Send + Sync>
+        {
+            fn default() -> Self {
+                Self {
+                    owner: rc::Weak::<()>::new(),
+                    this: ptr::NonNull::dangling(),
+                }
+            }
+        }
+
+        impl<T> From<rc::Weak<T>> for Weak<T, T> {
+            fn from(owner: rc::Weak<T>) -> Self {
+                let this = ptr::NonNull::new(owner.as_ptr() as *mut T)
+                    .unwrap_or(ptr::NonNull::dangling());
+                Self { owner, this }
+            }
+        }
+
+        impl<T: ?Sized, Owner: ?Sized> From<Weak<T, Owner>> for rc::Weak<Owner> {
+            fn from(this: Weak<T, Owner>) -> Self {
+                this.owner
+            }
+        }
+
+        impl<'a, T: ?Sized, Owner: 'a> From<Weak<T, Owner>>
+        for Weak<T, dyn 'a + Destruct> {
+            fn from(this: Weak<T, Owner>) -> Self {
+                let Weak { owner, this } = this;
+                Weak { owner, this }
+            }
+        }
+
+        impl<'a, T: ?Sized, Owner: 'a + Send> From<Weak<T, Owner>>
+        for Weak<T, dyn 'a + Destruct + Send> {
+            fn from(this: Weak<T, Owner>) -> Self {
+                let Weak { owner, this } = this;
+                Weak { owner, this }
+            }
+        }
+
+        impl<'a, T: ?Sized, Owner: 'a + Send + Sync> From<Weak<T, Owner>>
+        for Weak<T, dyn 'a + Destruct + Send + Sync> {
             fn from(this: Weak<T, Owner>) -> Self {
                 let Weak { owner, this } = this;
                 Weak { owner, this }
@@ -472,12 +643,19 @@ macro_rules! make_shared_rc {
     };
 }
 
+macro_rules! make_shared_rc {
+    ($Rc:ident: $($Oibit:ident+)*) => {
+        make_shared_strong!($Rc: $($Oibit+)*);
+        make_shared_weak!($Rc: $($Oibit+)*);
+    };
+}
+
 /// Thread-safe reference-counting pointers.
 ///
 /// See the [`Arc`] documentation for more details.
 pub mod sync {
     use {super::*, alloc::sync as rc};
-    make_shared_rc!(Arc);
+    make_shared_rc!(Arc: Send+Sync+);
 }
 
 /// Single-threaded reference-counting pointers.
@@ -485,5 +663,5 @@ pub mod sync {
 /// See the [`Rc`] documentation for more details.
 pub mod rc {
     use {super::*, alloc::rc};
-    make_shared_rc!(Rc);
+    make_shared_rc!(Rc:);
 }
