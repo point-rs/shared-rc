@@ -26,43 +26,50 @@ use core::{
     ptr,
 };
 #[cfg(feature = "std")]
-use std::{error::Error, panic::UnwindSafe};
+use std::error::Error;
 
-pub type Rc<T, Owner = dyn Destruct> = crate::rc::Rc<'static, T, Owner>;
-pub type Arc<T, Owner = dyn Destruct + Send + Sync> = crate::sync::Arc<'static, T, Owner>;
+type LocalOwner<'a> = dyn 'a + Destruct;
+type GuestOwner<'a> = dyn 'a + Destruct + Send + Sync;
+
+/// Alias for [`rc::Rc`] where `T: 'static`.
+pub type Rc<T, Owner = LocalOwner<'static>> = crate::rc::Rc<'static, T, Owner>;
+/// Alias for [`rc::Weak`] where `T: 'static`.
+pub type WeakRc<T, Owner = LocalOwner<'static>> = crate::rc::Weak<'static, T, Owner>;
+/// Alias for [`sync::Arc`] where `T: 'static`.
+pub type Arc<T, Owner = GuestOwner<'static>> = crate::sync::Arc<'static, T, Owner>;
+/// Alias for [`sync::Weak`] where `T: 'static`.
+pub type WeakArc<T, Owner = GuestOwner<'static>> = crate::sync::Weak<'static, T, Owner>;
 
 macro_rules! make_shared_strong {
     ($Rc:ident: $($Oibit:ident+)*) => {
         /// A projecting version of
         #[doc = concat!(" [`", stringify!($Rc), "`](rc::", stringify!($Rc), ")")]
         /// which allows owning a containing struct but referencing a field.
-        pub struct $Rc<'a, T: ?Sized, Owner: ?Sized = dyn 'a + Destruct $(+$Oibit)*> {
+        ///
+        /// The lifetime is an implied upper-bound (covariant) lifetime on
+        /// the projected field type. This bound is necessary for soundness,
+        /// but can be left as `'static` in most cases, where `T: 'static`.
+        pub struct $Rc<'a, T: ?Sized, Owner: ?Sized = DynOwner<'a>> {
             owner: rc::$Rc<Owner>,
             this: ptr::NonNull<T>,
             marker: PhantomData<&'a T>,
         }
 
-        unsafe impl<T: ?Sized, Owner: ?Sized> Send for $Rc<'_, T, Owner>
+        unsafe impl<'a, T: ?Sized, Owner: ?Sized> Send for $Rc<'a, T, Owner>
         where
-            for<'a> &'a T: Send,
+            &'a T: Send,
             rc::$Rc<Owner>: Send,
         {
         }
 
-        unsafe impl<T: ?Sized, Owner: ?Sized> Sync for $Rc<'_, T, Owner>
+        unsafe impl<'a, T: ?Sized, Owner: ?Sized> Sync for $Rc<'a, T, Owner>
         where
-            for<'a> &'a T: Sync,
+            &'a T: Sync,
             rc::$Rc<Owner>: Sync,
         {
         }
 
-        #[cfg(feature = "std")]
-        impl<T: ?Sized, Owner: ?Sized> UnwindSafe for $Rc<'_, T, Owner>
-        where
-            for<'a> &'a T: UnwindSafe,
-            rc::$Rc<Owner>: UnwindSafe,
-        {
-        }
+        // implied UnwindSafe is correct
 
         impl<T: ?Sized, Owner: ?Sized> Clone for $Rc<'_, T, Owner> {
             fn clone(&self) -> Self {
@@ -74,7 +81,7 @@ macro_rules! make_shared_strong {
             }
         }
 
-        impl<'a, T: 'a $(+$Oibit)*> $Rc<'_, T, dyn 'a + Destruct $(+$Oibit)*> {
+        impl<'a, T: 'a $(+$Oibit)*> $Rc<'_, T, DynOwner<'a>> {
             /// Constructs a new
             #[doc = concat!("`", stringify!($Rc), "<T>`")]
             /// with erased owner.
@@ -96,7 +103,7 @@ macro_rules! make_shared_strong {
             /// Erases the owning type so projected
             #[doc = concat!("`", stringify!($Rc), "<T>`")]
             /// can be used uniformly.
-            pub fn erase_owner(this: Self) -> $Rc<'a, T, dyn 'o + Destruct $(+$Oibit)*> {
+            pub fn erase_owner(this: Self) -> $Rc<'a, T, DynOwner<'o>> {
                 let Self { owner, this, marker } = this;
                 $Rc { owner, this, marker }
             }
@@ -383,7 +390,7 @@ macro_rules! make_shared_weak {
         /// A projecting version of
         /// [`Weak`](rc::Weak)
         /// which allows owning a containing struct but referencing a field.
-        pub struct Weak<'a, T: ?Sized, Owner: ?Sized = dyn 'a + Destruct $(+$Oibit)*> {
+        pub struct Weak<'a, T: ?Sized, Owner: ?Sized = DynOwner<'a>> {
             owner: rc::Weak<Owner>,
             this: ptr::NonNull<T>,
             marker: PhantomData<&'a T>,
@@ -403,13 +410,7 @@ macro_rules! make_shared_weak {
         {
         }
 
-        #[cfg(feature = "std")]
-        impl<T: ?Sized, Owner: ?Sized> UnwindSafe for Weak<'_, T, Owner>
-        where
-            for<'a> &'a T: UnwindSafe,
-            rc::Weak<Owner>: UnwindSafe,
-        {
-        }
+        // implied UnwindSafe is correct
 
         impl<T: ?Sized, Owner: ?Sized> Clone for Weak<'_, T, Owner> {
             fn clone(&self) -> Self {
@@ -421,7 +422,7 @@ macro_rules! make_shared_weak {
             }
         }
 
-        impl<'o, T: 'o $(+$Oibit)*> Weak<'_, T, dyn 'o + Destruct $(+$Oibit)*> {
+        impl<'o, T: 'o $(+$Oibit)*> Weak<'_, T, DynOwner<'o>> {
             /// Constructs a new
             /// `Weak<T>`
             /// with erased owner.
@@ -447,7 +448,7 @@ macro_rules! make_shared_weak {
             /// Erases the owning type so that projected
             /// `Weak<T>`
             /// can be used uniformly.
-            pub fn erase_owner(this: Self) -> Weak<'a, T, dyn 'o + Destruct $(+$Oibit)*> {
+            pub fn erase_owner(this: Self) -> Weak<'a, T, DynOwner<'o>> {
                 let Self { owner, this, marker } = this;
                 Weak { owner, this, marker }
             }
@@ -668,7 +669,7 @@ macro_rules! make_shared_rc {
 ///
 /// See the [`Arc`] documentation for more details.
 pub mod sync {
-    use {super::*, alloc::sync as rc};
+    use {super::GuestOwner as DynOwner, super::*, alloc::sync as rc};
     make_shared_rc!(Arc: Send+Sync+);
 }
 
@@ -676,16 +677,18 @@ pub mod sync {
 ///
 /// See the [`Rc`] documentation for more details.
 pub mod rc {
-    use {super::*, alloc::rc};
+    use {super::LocalOwner as DynOwner, super::*, alloc::rc};
     make_shared_rc!(Rc:);
 }
 
 /// Compile-fail tests.
 ///
-/// Issue point-rs/shared-rc#3, a variance-related UAF unsoundness exploit.
+/// Issue point-rs/shared-rc#3, a UAF unsoundness exploit. In short, `project`'s
+/// `fn(&T) -> &U` lacked a requirement that the `&U` lives long enough. This is
+/// now handled by phantom data telling borrowck to treat `Rc<'_, T>` like `&T`.
 ///
-/// ```compile_fail
-/// # use shared_rc::Rc;
+/// ```rust,compile_fail
+/// # use shared_rc::rc::Rc;
 /// let x = Rc::new_owner(());
 /// let z: Rc<str, ()>;
 /// {

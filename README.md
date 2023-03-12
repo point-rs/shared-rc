@@ -10,5 +10,7 @@ and a pointer to a field owned by that `Rc`. This is a "self-referential" type
 in the vein of [ouroboros](https://lib.rs/ouroboros) or [yoke](https://lib.rs/yoke).
 
 By specializing just for the reference-counted pointers, this crate provides a
-much simpler API compared to that of ouroboros, yoke, or any other crate for
-general self-referential types.
+potentially simpler API compared to that of ouroboros, yoke, or any other crate
+for general self-referential types.
+
+You're *probably* better off using yoke, though.
