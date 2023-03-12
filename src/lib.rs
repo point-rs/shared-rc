@@ -55,20 +55,7 @@ macro_rules! make_shared_strong {
             marker: PhantomData<&'a T>,
         }
 
-        unsafe impl<'a, T: ?Sized, Owner: ?Sized> Send for $Rc<'a, T, Owner>
-        where
-            &'a T: Send,
-            rc::$Rc<Owner>: Send,
-        {
-        }
-
-        unsafe impl<'a, T: ?Sized, Owner: ?Sized> Sync for $Rc<'a, T, Owner>
-        where
-            &'a T: Sync,
-            rc::$Rc<Owner>: Sync,
-        {
-        }
-
+        // Send + Sync are impld outside the macro
         // implied UnwindSafe is correct
 
         impl<T: ?Sized, Owner: ?Sized> Clone for $Rc<'_, T, Owner> {
@@ -396,20 +383,7 @@ macro_rules! make_shared_weak {
             marker: PhantomData<&'a T>,
         }
 
-        unsafe impl<T: ?Sized, Owner: ?Sized> Send for Weak<'_, T, Owner>
-        where
-            for<'a> &'a T: Send,
-            rc::Weak<T>: Send,
-        {
-        }
-
-        unsafe impl<T: ?Sized, Owner: ?Sized> Sync for Weak<'_, T, Owner>
-        where
-            for<'a> &'a T: Sync,
-            rc::Weak<T>: Sync,
-        {
-        }
-
+        // Send + Sync are impld outside the macro
         // implied UnwindSafe is correct
 
         impl<T: ?Sized, Owner: ?Sized> Clone for Weak<'_, T, Owner> {
@@ -671,6 +645,34 @@ macro_rules! make_shared_rc {
 pub mod sync {
     use {super::GuestOwner as DynOwner, super::*, alloc::sync as rc};
     make_shared_rc!(Arc: Send+Sync+);
+
+    unsafe impl<T: ?Sized, Owner: ?Sized> Send for Arc<'_, T, Owner>
+    where
+        Owner: Send + Sync,
+        T: Sync,
+    {
+    }
+
+    unsafe impl<'a, T: ?Sized, Owner: ?Sized> Sync for Arc<'a, T, Owner>
+    where
+        Owner: Send + Sync,
+        T: Sync,
+    {
+    }
+
+    unsafe impl<T: ?Sized, Owner: ?Sized> Send for Weak<'_, T, Owner>
+    where
+        Owner: Send + Sync,
+        T: Sync,
+    {
+    }
+
+    unsafe impl<'a, T: ?Sized, Owner: ?Sized> Sync for Weak<'a, T, Owner>
+    where
+        Owner: Send + Sync,
+        T: Sync,
+    {
+    }
 }
 
 /// Single-threaded reference-counting pointers.
